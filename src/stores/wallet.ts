@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { ethers } from 'ethers';
+import { toast } from 'vue3-toastify';
 
 // USDT Contract Address on Ethereum Mainnet
 const USDT_ADDRESS = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
@@ -17,7 +18,7 @@ export const useWalletStore = defineStore('wallet', () => {
   const ethBalance = ref<string | null>(null);
   const usdtBalance = ref<string | null>(null);
   const isConnecting = ref(false);
-  const error = ref<string | null>(null);
+  // error state removed, using toasts
 
   const isConnected = computed(() => !!account.value);
   const shortAddress = computed(() => {
@@ -27,9 +28,10 @@ export const useWalletStore = defineStore('wallet', () => {
 
   // Helper: Get Ethereum Provider
   const getProvider = () => {
-    if (window.ethereum) {
-      return new ethers.BrowserProvider(window.ethereum);
+    if ((window as any).ethereum) {
+      return new ethers.BrowserProvider((window as any).ethereum);
     }
+    console.error('MetaMask (window.ethereum) not found!');
     return null;
   };
 
@@ -40,20 +42,19 @@ export const useWalletStore = defineStore('wallet', () => {
 
   // Action: Switch Network to Ethereum Mainnet
   const switchNetwork = async () => {
-    if (!window.ethereum) return;
-
+    if (!(window as any).ethereum) return;
+    
     try {
-      await window.ethereum.request({
+      await (window as any).ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: '0x1' }], // Mainnet
       });
     } catch (switchError: any) {
-      // This error code indicates that the chain has not been added to MetaMask.
       if (switchError.code === 4902) {
-        error.value = 'Ethereum Mainnet is not configured in your wallet.';
+        toast.error('Ethereum Mainnet is not configured in your wallet.');
       } else {
         console.error('Failed to switch network:', switchError);
-        error.value = 'Failed to switch network. Please switch manually.';
+        toast.error('Failed to switch network. Please switch manually.');
       }
     }
   };
@@ -66,16 +67,10 @@ export const useWalletStore = defineStore('wallet', () => {
       const provider = getProvider();
       if (!provider) return;
 
-      // Ensure we are on Mainnet for correct balances
       const network = await provider.getNetwork();
       chainId.value = network.chainId.toString();
 
       if (network.chainId !== 1n) {
-        // If not on Mainnet, we can't fetch USDT from the mainnet address easily without a dedicated provider
-        // But per requirements, we should display Mainnet balances. 
-        // We will try to switch network first if connected?
-        // Or just show prompts. For now, let's try to fetch what we can.
-        // If wrong network, USDT call might fail or return 0 if address exists but is different contract on testnet.
         ethBalance.value = null;
         usdtBalance.value = null;
         return; 
@@ -88,32 +83,36 @@ export const useWalletStore = defineStore('wallet', () => {
       // Fetch USDT Balance
       const usdtContract = new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider);
       
-      // Check code at address to avoid errors if contract doesn't exist on this chain
       const code = await provider.getCode(USDT_ADDRESS);
       if (code === '0x') {
         usdtBalance.value = '0.00'; 
         return;
       }
       
-      const rawUsdtBalance = await usdtContract.balanceOf(account.value);
-      const decimals = await usdtContract.decimals();
-      usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+      if (usdtContract && usdtContract.balanceOf && usdtContract.decimals) {
+          const rawUsdtBalance = await usdtContract.balanceOf(account.value);
+          const decimals = await usdtContract.decimals();
+          usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+      } else {
+        const rawUsdtBalance = await usdtContract.getFunction('balanceOf').staticCall(account.value);
+        const decimals = await usdtContract.getFunction('decimals').staticCall();
+        usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+      }
 
     } catch (err: any) {
       console.error('Error fetching balances:', err);
-      error.value = 'Failed to fetch balances.';
+      toast.error('Failed to fetch balances.');
     }
   };
 
   // Action: Connect Wallet
   const connect = async () => {
     isConnecting.value = true;
-    error.value = null;
 
     try {
       const provider = getProvider();
       if (!provider) {
-        error.value = 'MetaMask is not installed!';
+        toast.error('MetaMask is not installed!');
         return;
       }
 
@@ -121,16 +120,16 @@ export const useWalletStore = defineStore('wallet', () => {
       
       if (accounts.length > 0) {
         account.value = accounts[0];
+        toast.success('Wallet connected!');
         await checkNetworkAndFetch();
       }
       
     } catch (err: any) {
-      console.error('Connection error:', err);
-      // EIP-1193 userRejectedRequest error
+      console.error('Connection error detailed:', err);
       if (err.code === 4001) {
-        error.value = 'Please connect to MetaMask.';
+        toast.warn('Connection rejected by user.');
       } else {
-        error.value = 'Failed to connect wallet.';
+        toast.error(`Failed to connect: ${err.message || err}`);
       }
     } finally {
       isConnecting.value = false;
@@ -147,7 +146,6 @@ export const useWalletStore = defineStore('wallet', () => {
 
       if (network.chainId !== 1n) {
           await switchNetwork();
-          // Re-check after switch attempt
           const newNetwork = await provider.getNetwork();
           chainId.value = newNetwork.chainId.toString();
       }
@@ -155,7 +153,7 @@ export const useWalletStore = defineStore('wallet', () => {
       if (chainId.value === '1') {
           await fetchBalances();
       } else {
-          error.value = "Please switch to Ethereum Mainnet to see balances.";
+          toast.info("Please switch to Ethereum Mainnet to see balances.");
       }
   };
 
@@ -165,7 +163,7 @@ export const useWalletStore = defineStore('wallet', () => {
     chainId.value = null;
     ethBalance.value = null;
     usdtBalance.value = null;
-    error.value = null;
+    toast.info('Wallet disconnected');
   };
 
   // Action: Init / Check Connection on Load
@@ -181,17 +179,17 @@ export const useWalletStore = defineStore('wallet', () => {
       }
 
       // Setup Listeners
-      if (window.ethereum) {
-        window.ethereum.on('accountsChanged', (accounts: string[]) => {
+      if ((window as any).ethereum) {
+        (window as any).ethereum.on('accountsChanged', (accounts: string[]) => {
           if (accounts.length > 0) {
-            account.value = accounts[0];
+            account.value = accounts[0] || null;
             checkNetworkAndFetch();
           } else {
             disconnect();
           }
         });
 
-        window.ethereum.on('chainChanged', () => {
+        (window as any).ethereum.on('chainChanged', () => {
           // recommended to reload on chain change, but we can handle it dynamically
           window.location.reload(); 
         });
@@ -208,7 +206,6 @@ export const useWalletStore = defineStore('wallet', () => {
     ethBalance,
     usdtBalance,
     isConnecting,
-    error,
     isConnected,
     shortAddress,
     connect,
