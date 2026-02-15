@@ -28,8 +28,8 @@ export const useWalletStore = defineStore('wallet', () => {
 
   // Helper: Get Ethereum Provider
   const getProvider = () => {
-    if ((window as any).ethereum) {
-      return new ethers.BrowserProvider((window as any).ethereum);
+    if (window.ethereum) {
+      return new ethers.BrowserProvider(window.ethereum);
     }
     console.error('MetaMask (window.ethereum) not found!');
     return null;
@@ -42,10 +42,10 @@ export const useWalletStore = defineStore('wallet', () => {
 
   // Action: Switch Network to Ethereum Mainnet
   const switchNetwork = async () => {
-    if (!(window as any).ethereum) return;
+    if (!window.ethereum) return;
     
     try {
-      await (window as any).ethereum.request({
+      await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: '0x1' }], // Mainnet
       });
@@ -89,14 +89,26 @@ export const useWalletStore = defineStore('wallet', () => {
         return;
       }
       
-      if (usdtContract && usdtContract.balanceOf && usdtContract.decimals) {
-          const rawUsdtBalance = await usdtContract.balanceOf(account.value);
-          const decimals = await usdtContract.decimals();
-          usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
-      } else {
-        const rawUsdtBalance = await usdtContract.getFunction('balanceOf').staticCall(account.value);
-        const decimals = await usdtContract.getFunction('decimals').staticCall();
-        usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+      if (usdtContract) {
+          // Explicitly cast or check methods if TS complains, but generally Contract has them dynamically.
+          // For stricter TS, use getFunction or strict ABI typing.
+          // Here we use optional chaining/adjustment for safety.
+          
+          try {
+             // Try standard method call if typed (requires TypeChain or generic)
+             // Or fallback to staticCall via getFunction for loose typings
+             
+             // Option A: Cast to any for simplicity if ABI is dynamic
+             const contractAny = usdtContract as any;
+             const rawUsdtBalance = await contractAny.balanceOf(account.value);
+             const decimals = await contractAny.decimals();
+             usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+          } catch (e) {
+             console.warn('Direct call failed, trying staticCall', e);
+             const rawUsdtBalance = await usdtContract.getFunction('balanceOf').staticCall(account.value);
+             const decimals = await usdtContract.getFunction('decimals').staticCall();
+             usdtBalance.value = (+formatBalance(rawUsdtBalance, decimals)).toFixed(2);
+          }
       }
 
     } catch (err: any) {
@@ -179,9 +191,9 @@ export const useWalletStore = defineStore('wallet', () => {
       }
 
       // Setup Listeners
-      if ((window as any).ethereum) {
-        (window as any).ethereum.on('accountsChanged', (accounts: string[]) => {
-          if (accounts.length > 0) {
+      if (window.ethereum) {
+        window.ethereum.on('accountsChanged', (accounts: string[]) => {
+          if (accounts && accounts.length > 0) {
             account.value = accounts[0] || null;
             checkNetworkAndFetch();
           } else {
@@ -189,7 +201,7 @@ export const useWalletStore = defineStore('wallet', () => {
           }
         });
 
-        (window as any).ethereum.on('chainChanged', () => {
+        window.ethereum.on('chainChanged', () => {
           // recommended to reload on chain change, but we can handle it dynamically
           window.location.reload(); 
         });
